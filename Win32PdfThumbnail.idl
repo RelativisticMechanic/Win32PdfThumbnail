@@ -1,0 +1,35 @@
+// Win32PdfThumbnail.idl : IDL source for Win32PdfThumbnail
+//
+
+// This file will be processed by the MIDL tool to
+// produce the type library (Win32PdfThumbnail.tlb) and marshalling code.
+
+import "oaidl.idl";
+import "ocidl.idl";
+
+[
+	object,
+	uuid(d79d95e3-6e58-4294-8df2-076fa13c3f4e),
+	pointer_default(unique)
+]
+interface IThumbnail : IUnknown
+{
+};
+
+[
+	uuid(909f7f4f-4e0f-4c70-9fa1-47cf3a814d66),
+	version(1.0),
+]
+library Win32PdfThumbnailLib
+{
+	importlib("stdole2.tlb");
+	[
+		uuid(2b2a023a-228b-42a7-93f9-00ab61d6cdf5)
+	]
+	coclass Thumbnail
+	{
+		[default] interface IThumbnailProvider;
+	};
+};
+
+import "thumbcache.idl";

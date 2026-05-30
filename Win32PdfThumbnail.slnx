@@ -1,0 +1,11 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Win32PdfThumbnail.vcxproj" />
+  <Project Path="Win32PdfThumbnailPS/Win32PdfThumbnailPS.vcxproj">
+    <BuildDependency Project="Win32PdfThumbnail.vcxproj" />
+    <Build Project="false" />
+  </Project>
+</Solution>
