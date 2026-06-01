@@ -95,6 +95,77 @@ BOOL PdfThumbnailProvider::GetThumbnail(UINT cx, HBITMAP* phbmp, WTS_ALPHATYPE*)
     return FALSE;
 }
 
+std::unique_ptr<PDFThumbnailProviderThumbnail> PdfThumbnailProvider::GenerateThumbnailWinRT(LPRECT lprcBounds) {
+	auto result = std::make_unique<PDFThumbnailProviderThumbnail>();
+
+    std::vector<BYTE> pdf_data = ReadEntireStream(m_stream);
+    if (pdf_data.empty())
+    {
+        return nullptr;
+    }
+
+    winrt::Windows::Storage::Streams::DataWriter writer;
+    winrt::Windows::Storage::Streams::InMemoryRandomAccessStream winrt_stream;
+    writer.WriteBytes(pdf_data);
+    winrt::Windows::Storage::Streams::IBuffer buffer = writer.DetachBuffer();
+    winrt_stream.WriteAsync(buffer).get();
+    winrt_stream.Seek(0);
+
+    winrt::Windows::Data::Pdf::PdfDocument doc = winrt::Windows::Data::Pdf::PdfDocument::LoadFromStreamAsync(winrt_stream).get();
+    if (doc.PageCount() == 0)
+    {
+        return nullptr;
+    }
+
+    winrt::Windows::Data::Pdf::PdfPage page = doc.GetPage(0);
+
+    int target_width = lprcBounds->right - lprcBounds->left;
+    int target_height = lprcBounds->bottom - lprcBounds->top;
+
+    auto page_size = page.Size();
+    float scale = min((float)target_width / page_size.Width, (float)target_height / page_size.Height);
+
+    int render_width = static_cast<int>(page_size.Width * scale);
+    int render_height = static_cast<int>(page_size.Height * scale);
+
+    winrt::Windows::Data::Pdf::PdfPageRenderOptions options;
+    options.DestinationWidth(static_cast<uint32_t>(render_width));
+    options.DestinationHeight(static_cast<uint32_t>(render_height));
+
+    /* Blank background color */
+    options.BackgroundColor(
+        winrt::Windows::UI::Color{
+            255, 255, 255, 255
+        });
+
+    winrt::Windows::Storage::Streams::InMemoryRandomAccessStream render_output_stream;
+    page.RenderToStreamAsync(render_output_stream, options).get();
+    render_output_stream.Seek(0);
+
+    /*
+        WinRT PDF renders a bitmap, into raw BGRA8 pixels.
+    */
+    auto decoder = winrt::Windows::Graphics::Imaging::BitmapDecoder::CreateAsync(render_output_stream).get();
+    auto pixel_data = decoder.GetPixelDataAsync(
+        winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
+        winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Ignore,
+        winrt::Windows::Graphics::Imaging::BitmapTransform(),
+        winrt::Windows::Graphics::Imaging::ExifOrientationMode::IgnoreExifOrientation,
+        winrt::Windows::Graphics::Imaging::ColorManagementMode::ColorManageToSRgb
+    ).get();
+
+    auto pixels = pixel_data.DetachPixelData();
+    
+    result->pixels = std::make_unique<uint8_t[]>(pixels.size());
+    memcpy(result->pixels.get(), pixels.data(), pixels.size());
+
+    result->render_width = render_width;
+    result->render_height = render_height;
+	result->offset_x = (target_width - render_width) / 2;
+	result->offset_y = (target_height - render_height) / 2;
+
+    return result;
+}
 
 void PdfThumbnailProvider::OnDrawThumbnail(HDC hDrawDC, LPRECT lprcBounds)
 {
@@ -120,140 +191,42 @@ void PdfThumbnailProvider::OnDrawThumbnail(HDC hDrawDC, LPRECT lprcBounds)
     }
     try
     {
-        std::vector<BYTE> pdfData = ReadEntireStream(m_stream);
-        if (pdfData.empty())
-        {
-            DrawErrorThumbnail(L"EMPTY PDF", hDrawDC, lprcBounds);
-            return;
-        }
+		std::unique_ptr<PDFThumbnailProviderThumbnail> thumbnail = GenerateThumbnailWinRT(lprcBounds);
 
-        winrt::Windows::Storage::Streams::DataWriter writer;
-        winrt::Windows::Storage::Streams::InMemoryRandomAccessStream winrtStream;
-        try {
-            // Use explicit namespaces for WinRT to prevent ambiguity with your class
+		if (thumbnail == nullptr) {
+			DrawErrorThumbnail(L"???", hDrawDC, lprcBounds);
+			return;
+		}
 
-            writer.WriteBytes(pdfData);
-            winrt::Windows::Storage::Streams::IBuffer buffer = writer.DetachBuffer();
-            winrtStream.WriteAsync(buffer).get();
-            winrtStream.Seek(0);
-        }
-        catch (...) {
-            DrawErrorThumbnail(L"IBUF FAIL", hDrawDC, lprcBounds);
-            return;
-        }
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biSizeImage = thumbnail->render_width * thumbnail->render_height * 4;
+        bmi.bmiHeader.biWidth = thumbnail->render_width;
+        bmi.bmiHeader.biHeight = -thumbnail->render_height;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
 
-        // TODO: Make this work?
-        /*LARGE_INTEGER liZero = {0};
-        m_stream->Seek(liZero, STREAM_SEEK_SET, NULL);
-        winrt::com_ptr<::IUnknown> streamUnk;
+        SetStretchBltMode(hDrawDC, COLORONCOLOR);
 
-        try {
-            winrt::check_hresult(
-                ::CreateRandomAccessStreamOverStream(
-                    m_stream,
-                    BSOS_PREFERDESTINATIONSTREAM,   // ← copies into its own stream; safe
-                    IID_PPV_ARGS(streamUnk.put())
-                )
-            );
-        }
-        catch (...) {
-            DrawErrorThumbnail(L"WINRT FAIL", hDrawDC, lprcBounds);
-            return;
-        }
-        
-        auto winrtStream = streamUnk.as<winrt::Windows::Storage::Streams::IRandomAccessStream > ();
-        */
-
-       
-
-        try {
-
-            winrt::Windows::Data::Pdf::PdfDocument doc = winrt::Windows::Data::Pdf::PdfDocument::LoadFromStreamAsync(winrtStream).get();
-            if (doc.PageCount() == 0)
-            {
-                DrawErrorThumbnail(L"NO PAGES", hDrawDC, lprcBounds);
-                return;
-            }
-            winrt::Windows::Data::Pdf::PdfPage page = doc.GetPage(0);
-
-            int targetWidth = lprcBounds->right - lprcBounds->left;
-            int targetHeight = lprcBounds->bottom - lprcBounds->top;
-
-            auto pageSize = page.Size();
-            float scale = min((float)targetWidth / pageSize.Width, (float)targetHeight / pageSize.Height);
-
-            int renderWidth = static_cast<int>(pageSize.Width * scale);
-            int renderHeight = static_cast<int>(pageSize.Height * scale);
-
-            winrt::Windows::Data::Pdf::PdfPageRenderOptions options;
-            options.DestinationWidth(static_cast<uint32_t>(renderWidth));
-            options.DestinationHeight(static_cast<uint32_t>(renderHeight));
-
-            /* White background color */
-            options.BackgroundColor(
-                winrt::Windows::UI::Color{
-                    255, 255, 255, 255
-                });
-
-            winrt::Windows::Storage::Streams::InMemoryRandomAccessStream renderOutputStream;
-            page.RenderToStreamAsync(renderOutputStream, options).get();
-            renderOutputStream.Seek(0);
-
-            /*
-                Decode PNG into raw BGRA8 pixels.
-            */
-            auto decoder = winrt::Windows::Graphics::Imaging::BitmapDecoder::CreateAsync(renderOutputStream).get();
-            auto pixelData = decoder.GetPixelDataAsync(
-                winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
-                winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Ignore,
-                winrt::Windows::Graphics::Imaging::BitmapTransform(),
-                winrt::Windows::Graphics::Imaging::ExifOrientationMode::IgnoreExifOrientation,
-                winrt::Windows::Graphics::Imaging::ColorManagementMode::ColorManageToSRgb
-            ).get();
-
-            auto pixels = pixelData.DetachPixelData();
-
-            HBRUSH hBgBrush = GetSysColorBrush(COLOR_WINDOW);
-            FillRect(hDrawDC, lprcBounds, hBgBrush);
-
-            int offsetX = (targetWidth - renderWidth) / 2;
-            int offsetY = (targetHeight - renderHeight) / 2;
-
-            BITMAPINFO bmi = {};
-            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            bmi.bmiHeader.biSizeImage = renderWidth * renderHeight * 4;
-            bmi.bmiHeader.biWidth = renderWidth;
-            bmi.bmiHeader.biHeight = -renderHeight;
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB;
-
-            SetStretchBltMode(hDrawDC, COLORONCOLOR);
-
-            StretchDIBits(
-                hDrawDC,
-                lprcBounds->left + offsetX,
-                lprcBounds->top + offsetY,
-                renderWidth,
-                renderHeight,
-                0,
-                0,
-                renderWidth,
-                renderHeight,
-                pixels.data(),
-                &bmi,
-                DIB_RGB_COLORS,
-                SRCCOPY);
-        }
-        catch (...) {
-            DrawErrorThumbnail(L"DOC FAIL", hDrawDC, lprcBounds);
-            return;
-        }
-
+        StretchDIBits(
+            hDrawDC,
+            lprcBounds->left + thumbnail->offset_x,
+            lprcBounds->top + thumbnail->offset_y,
+            thumbnail->render_width,
+            thumbnail->render_height,
+            0,
+            0,
+            thumbnail->render_width,
+            thumbnail->render_height,
+            thumbnail->pixels.get(),
+            &bmi,
+            DIB_RGB_COLORS,
+            SRCCOPY);
     }
-    catch (...)
-    {
-        DrawErrorThumbnail(L"RENDER FAIL", hDrawDC, lprcBounds);
+    catch (...) {
+        DrawErrorThumbnail(L"DOC FAIL", hDrawDC, lprcBounds);
+        return;
     }
 }
 

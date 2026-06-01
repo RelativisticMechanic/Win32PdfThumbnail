@@ -20,6 +20,14 @@
 
 using namespace ATL;
 
+typedef struct {
+	std::unique_ptr<uint8_t[]> pixels;
+	int render_width;
+	int render_height;
+	int offset_x;
+	int offset_y;
+} PDFThumbnailProviderThumbnail;
+
 class PdfThumbnailProvider : public CAtlDocumentImpl
 {
 public:
@@ -44,4 +52,5 @@ protected:
 private:
 	CComPtr<IStream> m_stream;
 	void DrawErrorThumbnail(LPCWSTR message, HDC hDrawDC, LPRECT lprcBounds);
+	std::unique_ptr<PDFThumbnailProviderThumbnail> GenerateThumbnailWinRT(LPRECT lprcBounds);
 };
